@@ -81,7 +81,7 @@ plt.show()
 name_train, name_test, text_train, text_test, label_train, label_test = train_test_split(
         df[['name', 'url']], df['desc'], df['section'], 
         test_size=0.3,
-        random_state = 100) # use random_state to set the same seed each time
+        random_state = 1) # use random_state to set the same seed each time
 
 #%%
 # Code from here onwards based on an excellent tutorial: 
@@ -116,6 +116,9 @@ def spacy_tokenizer(sentence):
     """This is a custom function from the tutorial - I need to dig into this
     I want to try it with the Spacy built-in Tokenizer first
     But basically it turns words into their basic lemmas
+    
+    I want to look more at how I'm tokenising web addresses, dates, emails 
+    and numbers
     """
     tokens = parser(sentence)
     tokens = [word.lemma_.lower().strip() if word.lemma_ != "-PRON-" 
@@ -125,8 +128,11 @@ def spacy_tokenizer(sentence):
               and word not in punctuation]
     return tokens
 
+# 2 different options for turning the lists of words into vectors
+# once they're vectors (matrices of numbers) you can do calculations on them
+# I'll need to make a decent way to assess them before choosing
 bow_vector = CountVectorizer(tokenizer = spacy_tokenizer, ngram_range = (1,1))
-#tfidf_vector = TfidfVectorizer(tokenizer = spacy_tokenizer)
+tfidf_vector = TfidfVectorizer(tokenizer = spacy_tokenizer, ngram_range = (1,1))
 
 #SET CLASSIFIER
 classifier = LogisticRegression(class_weight = 'balanced',
@@ -137,7 +143,7 @@ classifier = LogisticRegression(class_weight = 'balanced',
 
 # Run the cleaner, vector and classifier into a pipeline
 pipe = Pipeline([('cleaner', predictors()),
-                 ('vectorizer', bow_vector),
+                 ('vectorizer', tfidf_vector),
                  ('classifier', classifier)])
 
 # push the training data into the pipeline to get a model
