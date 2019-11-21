@@ -1,13 +1,13 @@
 ## SETUP
 import requests
+import string
 import pandas as pd
 import matplotlib.pyplot as plt
-import string
 
 from spacy.lang.en.stop_words import STOP_WORDS
 from spacy.lang.en import English
 
-from sklearn.feature_extraction.text import CountVectorizer,TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.base import TransformerMixin
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
@@ -15,7 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn import metrics
 
 # AUTHENTICATION
-#key and token from Trello - both needed for authentication
+# key and token from Trello - both needed for authentication
 with open('/Users/alec/Python/KEYS/trello.env', 'r') as f:
     myKey = f.readline().rstrip('\n')
     myToken = f.readline().rstrip('\n')
@@ -31,8 +31,9 @@ everything = [backlog, archive, in_play]
 # get all the cards from the Trello archive 
 def get_data(board, call, fields = []):
     """Make an Trello API call for a 'board' object. 
-    Use 'call' to specify what you want - eg 'cards' or 'labels'
-    Docs at https://developers.trello.com/reference/#boardsboardid-1
+    Use 'call' to specify what you want - eg 'cards' or 'labels'.
+    Fields should be a list of string field names - eg ['id']
+    List of API calls at https://developers.trello.com/reference/#boardsboardid-1
     """
     url = f"https://api.trello.com/1/boards/{board}/{call}/"
     payload = {
@@ -43,22 +44,23 @@ def get_data(board, call, fields = []):
     response = requests.get(url, params = payload)
     return response.json()
 
-# Get all the cards
+# Get all the cards (also labels, just to check they're as expected)
 cards = []
 labels = []
 for board in everything: 
     cards.extend(get_data(board, 'cards', ['url', 'name', 'desc', 'labels']))
-    labels.extend(get_data(board, 'labels', ['url', 'name', 'color'])) 
+    labels.extend(get_data(board, 'labels', ['name', 'color'])) 
 
 # Set of section labels - not used, just to check the right 9 are there
 section_labels = {l['name'] for l in labels if l['color'] == 'sky'}
 
 #%%
-# Prepare data - just top level for now
-# Er, there's no point doing this because it's in the title...
-# But as a test to see if approach bears any fruit 
+# Prepare data - just top level section for now
+# This isn't actually useful because we could easily predict section 
+# from the card title. But it's a test of the supervised approach. 
 
-# Add top level section to cards
+# Add top level section to cards - might be faster to do this inside the 
+# dataframe, but with this little data it's fine
 for c in cards:
     c['section'] = ''
     for l in c['labels']:
@@ -71,8 +73,7 @@ df = pd.DataFrame.from_dict(cards)
 df.drop(['id', 'labels'], axis = 1, inplace = True)
 df = df[df['section'] != '']
 
-# check distribution of sections
-fig = plt.figure(figsize=(8,6))
+# check and chart the distribution of sections
 df.groupby('section')['name'].count().plot.bar(ylim=0)
 plt.show()
 
@@ -94,8 +95,16 @@ class predictors(TransformerMixin):
     """
     def transform(self, X, **transform_params):
         """Basic text cleaning - I'll want to do more here
+        At the moment it removes trailing spaces, lowercases text,
+        and removes the signature. I could also remove all URLs,
+        dates, emails and numbers (esp classification numbers)
+        and the Scotland signature
         """
-        return [text.strip().lower() for text in X] 
+        result = [text.split('Page URL: /')[0] \
+         .split('\n------------------------------\n')[0] \
+         .strip().lower() for text in X]
+        return result   
+        #return [text.strip().lower() for text in X 
     
     def fit(self, X, y = None, **fit_params):
         """
@@ -116,11 +125,10 @@ def spacy_tokenizer(sentence):
     """This is a custom function from the tutorial - I need to dig into this
     I want to try it with the Spacy built-in Tokenizer first
     But basically it turns words into their basic lemmas
-    
-    I want to look more at how I'm tokenising web addresses, dates, emails 
-    and numbers
     """
     tokens = parser(sentence)
+    #-PRON- is a Spacy lemma that means 'any pronoun' - 
+    # it treats them all equally - I need to look at this more
     tokens = [word.lemma_.lower().strip() if word.lemma_ != "-PRON-" 
               else word.lower_ for word in tokens]
     tokens = [word for word in tokens 
@@ -153,6 +161,13 @@ pipe.fit(text_train, label_train)
 predicted = pipe.predict(text_test)
 print("Accuracy:", metrics.accuracy_score(label_test, predicted))
 
+# testing scikit learn's cross validation - seems easy
+from sklearn.model_selection import cross_val_score
+scores = cross_val_score(pipe, text_train, label_train, cv=5)
+print("Cross-validation accuracy:", sum(scores)/5)
+
+#%%
+
 # Make results table so I can export if I want
 results = pd.DataFrame({
         'Ticket': name_test['name'],
@@ -169,3 +184,5 @@ df = pd.DataFrame({'Actual topic counts': actual,
         index=section_labels)
 
 ax = df.plot.bar(rot=0)
+
+#results.to_csv('results.csv', index = False)
