@@ -101,7 +101,7 @@ class predictors(TransformerMixin):
         and the Scotland signature
         """
         result = [text.split('Page URL: /')[0] \
-         .split('\n------------------------------\n')[0] \
+         .split('------------------------------')[0] \
          .strip().lower() for text in X]
         return result   
         #return [text.strip().lower() for text in X 
@@ -148,10 +148,13 @@ classifier = LogisticRegression(class_weight = 'balanced',
                                 multi_class = 'ovr')
 
 #%%
+from sklearn.feature_extraction.text import TfidfTransformer
+
 
 # Run the cleaner, vector and classifier into a pipeline
 pipe = Pipeline([('cleaner', predictors()),
-                 ('vectorizer', tfidf_vector),
+                 ('vectorizer', bow_vector),
+                 ('tfidf', TfidfTransformer()),
                  ('classifier', classifier)])
 
 # push the training data into the pipeline to get a model
