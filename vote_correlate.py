@@ -2,7 +2,12 @@
 # Is number of votes affected by how positive those votes are? 
 # Any other correlations? 
 
+import requests
+import string
+import re
 import pandas as pd
+
+from bs4 import BeautifulSoup 
 from apiclient.discovery import build
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -141,8 +146,8 @@ joined = views.merge(votes, "inner",
 
 stats = joined.pivot_table('ga:uniqueEvents', 
                            ['ga:pagePath', 'ga:dimension2', 'ga:uniquePageviews'], 
-                           'ga:eventLabel')
-
+                           'ga:eventLabel').reset_index()
+#%%
 del views
 del votes
 del joined
@@ -163,3 +168,39 @@ stats['Positive%'] = stats['YesVotes']/stats['TotalVotes']
 df = stats[stats['TotalVotes'] >= 100]
 
 #%%
+
+test = '/consumer/holiday-cancellations-and-compensation/if-your-flights-delayed-or-cancelled/'
+punctuation = string.punctuation + '““””•…–—€’'
+
+def content(url):
+    response = requests.get('http://www.citizensadvice.org.uk' + url)
+    soup = BeautifulSoup(response.text, 'lxml')
+    content = soup.find(class_='articleContent').text
+    stripped = content.translate(str.maketrans(' ', ' ', punctuation))
+    return stripped
+
+def count_words_regex(text):
+    return len(re.findall(r'\w+', text))
+
+def count_words_split(text):
+    return len(text.split())
+
+# BENCHMARKING FUNCTION
+    
+import time
+
+def speed(reps, func, **kwargs):
+    """times a function in milliseconds, averaged over reps repetitions
+    """
+    start = time.perf_counter()
+    # Run the selected function, using **kwargs to supply arguments
+    for x in range(reps):
+        result = func(**kwargs)
+    end = time.perf_counter()
+    # multiply by 1,000 to convert to milliseconds
+    return ((end - start) * 1000) / reps
+
+words = content(test)
+
+print('regex:', speed(100, count_words_regex, text = words))
+print('split:', speed(100, count_words_split, text = words))
