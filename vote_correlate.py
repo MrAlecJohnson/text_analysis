@@ -1,9 +1,7 @@
-# Does number of votes inversely correlate with page length? 
-# Is number of votes affected by how positive those votes are? 
-# Any other correlations? 
+"""Gets data to analyse whether pageRating votes correlate with page length
+Finds unique pageviews in 2019, wordcount and template of currently live pages"""
 
 import os
-import time
 import string
 import requests
 import pandas as pd
@@ -14,29 +12,29 @@ from apiclient.discovery import build
 from multiprocessing.dummy import Pool 
 from oauth2client.service_account import ServiceAccountCredentials
 
-def authenticate(key_file, service):
-    """Function to authenticate Sheets or Analytics. 
-    Pass it SHEETS_SCOPE or ANALYTICS_SCOPE
-    """
-    return ServiceAccountCredentials.from_json_keyfile_name(key_file, service)
-
+# Authenticate for BigQuery to get list of live pages
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/Users/alec/Python/KEYS/backlogger_bq.json'
 
+# Authenticate for and Google Analytics to get votes and views
 ANALYTICS_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
 KEY_FILE_LOCATION = '/Users/alec/Python/KEYS/backlogger_bq.json'
 
-ga_creds = authenticate(KEY_FILE_LOCATION, ANALYTICS_SCOPES)
+ga_creds = ServiceAccountCredentials.from_json_keyfile_name(KEY_FILE_LOCATION, ANALYTICS_SCOPES)
 
 #%%
-
-START = '2019-01-01'
-END = '2019-12-31'
-VIEW_ID = 'ga:93356290' # just public site
-PAGES = '^/(benefits|consumer|debt-and-money|family|health|housing|immigration|law-and-courts|work)/'
+# Set up functions for getting data from Google Analytics
+def get_analytics(analytics, query):
+    """Standard Google Analytics API function
+    Pass it the standard analytics object and a reportRequests query
+    """
+    result = analytics.reports().batchGet(
+        body={'reportRequests': query}
+        ).execute()
+    return list_response(result)
 
 def list_response(response):
     """ A standard Google Analytics function 
-    Rearranges results into nested lists
+    Use on results of query functions to turn them into DataFrames
     """
     lst = []
     # Structures the data into a table
@@ -68,14 +66,14 @@ def list_response(response):
     
     return pd.DataFrame(lst)
 
-def get_views(creds):
-    """Standard Google Analytics API function
-    Gets the pages and their views
-    """
-    analytics = build('analyticsreporting', 'v4', credentials=creds)
-    result = analytics.reports().batchGet(
-        body={
-        'reportRequests': [
+#%%
+# Make the Google Analytics data requests
+START = '2019-01-01'
+END = '2019-12-31'
+VIEW_ID = 'ga:93356290' # just public site
+PAGES = '^/(benefits|consumer|debt-and-money|family|health|housing|immigration|law-and-courts|work)/'
+
+views_query = [ # Gets advice pages and their unique pageviews
         {
           'viewId': VIEW_ID,
           'dateRanges': [{'startDate': START, 'endDate': END}],
@@ -95,18 +93,8 @@ def get_views(creds):
           'orderBys': [{'fieldName': 'ga:pagePath', 'sortOrder': 'ASCENDING'}],
           'pageSize': 10000
         }]
-      }
-  ).execute()
-    return list_response(result)
 
-def get_votes(creds):
-    """Standard Google Analytics API function
-    Gets the event count for the pages
-    """
-    analytics = build('analyticsreporting', 'v4', credentials=creds)
-    result = analytics.reports().batchGet(
-        body={
-        'reportRequests': [
+votes_query = [ # Gets advice pages and their vote counts
         {
           'viewId': VIEW_ID,
           'dateRanges': [{'startDate': START, 'endDate': END}],
@@ -132,35 +120,10 @@ def get_votes(creds):
           'orderBys': [{'fieldName': 'ga:eventAction', 'sortOrder': 'ASCENDING'}],
           'pageSize': 10000
         }]
-      }
-  ).execute()
-    return list_response(result)
 
-#%%
-# get live page list to get rid of expired pages 
-def get_current_data(client):
-    """pagesreport_view is always the latest data in the table 
-    This gets the relevant data from the view
-    """
-    query = client.query("""
-        SELECT DISTINCT
-          Path
-        FROM `pagesreport.pagesreport_view`
-        WHERE
-          REGEXP_CONTAINS(Path, "^/(benefits|consumer|debt-and-money|family|health|housing|immigration|law-and-courts|work)/")
-          AND StopPublish IS NULL
-          AND Shortcut NOT LIKE 'Shortcut%'
-          """)
-        
-    results = query.result()  
-    return results.to_dataframe()
-
-client = bigquery.Client()
-current = get_current_data(client)
-
-#%%
-views = get_views(ga_creds)
-votes = get_votes(ga_creds)
+analytics = build('analyticsreporting', 'v4', credentials = ga_creds)
+views = get_analytics(analytics, views_query)
+votes = get_analytics(analytics, votes_query)
 
 joined = views.merge(votes, "inner", 
                     left_on = "ga:pagePath", 
@@ -184,19 +147,43 @@ stats.rename(index = str, columns = {
 stats[['YesVotes', 'NoVotes']].fillna(0, inplace = True)
 stats['TotalVotes'] = stats['YesVotes'] + stats['NoVotes']
 stats['Positive%'] = stats['YesVotes']/stats['TotalVotes']
+
+#%%
+# Get data from BigQuery and merge to remove pages that have expired
+def get_current_data(client):
+    """pagesreport_view is always the latest data in the table 
+    This gets the relevant data from the view
+    """
+    query = client.query("""
+        SELECT DISTINCT
+          Path
+        FROM `pagesreport.pagesreport_view`
+        WHERE
+          REGEXP_CONTAINS(Path, "^/(benefits|consumer|debt-and-money|family|health|housing|immigration|law-and-courts|work)/")
+          AND StopPublish IS NULL
+          AND Shortcut NOT LIKE 'Shortcut%'
+          """)
+        
+    results = query.result()  
+    return results.to_dataframe()
+
+client = bigquery.Client()
+current = get_current_data(client)
+
 df = stats[stats['TotalVotes'] >= 100] \
         .merge(current, "inner", left_on = "Page", right_on = "Path") \
         .drop("Path", axis = 1)
 
 #%%
+# Scrape the pages to get their word counts
+# Use multithreading so it doesn't take forever
 punctuation = string.punctuation + '““””•…–—€’'
 
-# multithreading
-pool = Pool(4) 
-
-urls = df['Page'].tolist()
-
 def word_count(url):
+    """Go to page, find article content, 
+    delete the punctuation and count the words.
+    Return 0 if you don't get a proper response
+    """
     response = requests.get('http://www.citizensadvice.org.uk' + url)
     if response.ok:
         soup = BeautifulSoup(response.text, 'lxml')
@@ -207,24 +194,11 @@ def word_count(url):
         print(url, response)
         return {'Page': url, 'WordCount': 0}
 
+# Use the thread pool to map the word count function to the url list
+pool = Pool(4) 
+urls = df['Page'].tolist()
 results = pd.DataFrame(pool.map(word_count, urls))
 
+# Now merge the word counts back into the main dataframe and export it to csv
 df = df.merge(results, "inner", on = "Page")
 df.to_csv('pagedata.csv', index = 0)
-
-#%%
-
-import matplotlib
-import matplotlib.pyplot as plt
-matplotlib.style.use('ggplot')
-
-plt.scatter(df['TotalVotes'], df['Positive%'])
-plt.show()
-
-#%%
-df.drop(['NoVotes', 'YesVotes'], axis = 1, inplace = True)
-#%%
-correlation_beta = df[df['Template'] == 'BetaContentPage'].corr()
-correlation_old = df[df['Template'] == 'AdviceguidePage'].corr()
-
-correlation_benefits = df[df['Page'].str.startswith('/benefits/')].corr()
